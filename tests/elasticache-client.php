@@ -61,7 +61,7 @@ class CliMessages {
   / _ \ /_\  
  | (_) //_\\ 
   \__\_\_/ \_\033[0m
-\033[0;32m https://platform.qa.com/library                                  QA \033[0m
+\033[0;32m https://platform.qa.com/library \033[0m
 
  $script_name
 
