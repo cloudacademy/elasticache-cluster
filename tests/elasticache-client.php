@@ -1,0 +1,185 @@
+<?php
+
+/**
+  * QA Labs
+  *
+  * This CLI script shows how to use the AWS ElastiCache Memcached
+  * AutoDiscovery Connector for PHP.
+  *
+  * @Provider: Amazon Web Services
+  * @Service: ElastiCache
+  * @Date: 2015-01-31
+  * @Updated: 2026-02-20
+  * @Author: Antonio Angelino <antonio@cloudacademy.com>
+  * @See: http://docs.aws.amazon.com/AmazonElastiCache/latest/UserGuide/AutoDiscovery.html
+  *
+  */
+
+//------------------------------- UTILS -------------------------------
+error_reporting(E_ERROR | E_WARNING | E_PARSE);
+
+function genRandomString($length = 10) {
+    $characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    $charactersLength = strlen($characters);
+    $randomString = '';
+    for ($i = 0; $i < $length; $i++) {
+        $randomString .= $characters[rand(0, $charactersLength - 1)];
+    }
+    return $randomString;
+}
+
+class CliMessages {
+  private $stderr = null;
+  private $stdout = null;
+  public function __construct() {
+    $this->stdout = fopen("php://stdout", "w");
+    $this->stderr = fopen("php://stderr", "w");
+  }
+  public function __destruct(){
+    fclose($this->stdout);
+    fclose($this->stderr);
+  }
+  public function send_error_msg($msg) {
+    $msg = "\033[0;31m[ERROR] $msg\033[0m\n";
+    fwrite($this->stderr, $msg);
+  }
+  public function send_warn_msg($msg) {
+    $msg = "\033[1;35m[WARN] $msg\033[0m\n";
+    fwrite($this->stderr, $msg);
+  }
+  public function send_success_msg($msg) {
+    $msg = "\033[1;34m[OK] $msg\033[0m\n";
+    fwrite($this->stderr, $msg);
+  }
+  public function send_info_msg($msg) {
+    $msg = "\033[0;36m$msg\033[0m\n";
+    fwrite($this->stderr, $msg);
+  }
+  public function send_welcome_msg($script_name, $description) {
+    $ca = <<<EOF
+\033[0;37m   ___   _   
+  / _ \ /_\  
+ | (_) //_\\ 
+  \__\_\_/ \_\033[0m
+\033[0;32m https://platform.qa.com/library                                  QA \033[0m
+
+ $script_name
+
+ $description
+------------------------------------------------------------------------
+
+EOF;
+    fwrite($this->stdout, $ca);
+  }
+}
+//----------------------------- END UTILS -----------------------------
+
+$CliMessages = new CliMessages();
+$CliMessages->send_welcome_msg(
+  "AWS ElastiCache :: Connection Tester Script",
+  "This CLI script tests connectivity to an AWS ElastiCache Memcached\n " .
+  "cluster using the configuration endpoint for node discovery."
+);
+
+if (!class_exists('Memcached')) {
+  $CliMessages->send_error_msg(
+    "PHP Memcached extension is not installed!\n\t" .
+    "Please check the lab documentation and try again.\n"
+  );
+  exit(1);
+} else {
+  $CliMessages->send_success_msg("PHP Memcached extension is installed!\n");
+}
+
+/* Fetch and check the passed arguments */
+$options = getopt("e::p::", array("endpoint::", "port::"));
+$server_endpoint = isset($options['endpoint']) ? $options['endpoint'] : (isset($options['e']) ? $options['e'] : null);
+$server_port = isset($options['port']) ? $options['port'] : (isset($options['p']) ? $options['p'] : 11211);
+
+if (empty($server_endpoint)) {
+  $CliMessages->send_error_msg(
+    "You MUST specify the cluster endpoint!\n\t" .
+    "Usage: php elasticache-client.php --endpoint=your.endpoint.here.cache.amazonaws.com\n"
+  );
+  exit(1);
+}
+
+$server_endpoint_parts = explode(':', $server_endpoint);
+$server_endpoint = $server_endpoint_parts[0];
+$server_port = isset($server_endpoint_parts[1]) ? $server_endpoint_parts[1] : $server_port;
+
+$CliMessages->send_info_msg(
+  "Cluster endpoint: $server_endpoint\n" .
+  "Cluster port: $server_port\n"
+);
+
+/**
+ * Connect to ElastiCache using the configuration endpoint.
+ * DYNAMIC_CLIENT_MODE enables auto-discovery: the client contacts the
+ * configuration endpoint, retrieves the full node list, and uses
+ * consistent hashing to distribute keys evenly across all nodes.
+ */
+
+$CliMessages->send_info_msg("Trying to connect to the Memcached cluster...");
+
+try {
+  $client = new Memcached();
+
+  // Enable AWS auto-discovery and consistent hashing across all cluster nodes.
+  // Requires the AWS ElastiCache cluster client library (not standard pecl/memcached).
+  if (defined('Memcached::OPT_CLIENT_MODE') && defined('Memcached::DYNAMIC_CLIENT_MODE')) {
+    $client->setOption(Memcached::OPT_CLIENT_MODE, Memcached::DYNAMIC_CLIENT_MODE);
+    $CliMessages->send_info_msg("Auto-discovery enabled (DYNAMIC_CLIENT_MODE).");
+  } else {
+    $CliMessages->send_warn_msg("DYNAMIC_CLIENT_MODE not available - keys may not distribute evenly.");
+  }
+
+  $client->addServer($server_endpoint, $server_port);
+
+  // Verify connection with a test key
+  if ($client->set('connCK_' . genRandomString(5), 'OK', 1)) {
+    $CliMessages->send_success_msg("Connected to $server_endpoint cluster!\n");
+  } else {
+    $CliMessages->send_error_msg(
+      "Cannot connect to the $server_endpoint Memcached cluster!\n\t" .
+      "Please check the Security Group rules and try again.\n"
+    );
+    exit(1);
+  }
+} catch (Exception $e) {
+  $CliMessages->send_error_msg("Connection failed: " . $e->getMessage() . "\n");
+  exit(1);
+}
+
+// Write 100 keys to the cluster
+$CliMessages->send_info_msg("Trying to write data to $server_endpoint:");
+for ($i = 0; $i < 100; $i++) {
+  try {
+    $result = $client->set('cloudlabs_' . $i, 'ElasticacheIsGreat! #' . $i, 60);
+    if ($result) {
+      if ($i % 10 == 0 && $i != 0) {
+        $CliMessages->send_success_msg("cloudlabs_" . ($i - 10) . " to cloudlabs_$i keys written.");
+      }
+    } else {
+      $CliMessages->send_error_msg("Cannot write cloudlabs_$i key.\n");
+      exit(1);
+    }
+  } catch (Exception $e) {
+    $CliMessages->send_error_msg("Cannot write cloudlabs_$i key. Error: " . $e->getMessage() . "\n");
+    exit(1);
+  }
+}
+
+// Read back 10 keys
+$CliMessages->send_info_msg("\nTrying to read stored values from $server_endpoint:");
+for ($i = 0; $i < 10; $i++) {
+  try {
+    $storedVal = $client->get('cloudlabs_' . $i);
+    $CliMessages->send_success_msg("\tcloudlabs_$i = $storedVal.");
+  } catch (Exception $e) {
+    $CliMessages->send_error_msg("Cannot read cloudlabs_$i key. Error: " . $e->getMessage() . "\n");
+    exit(1);
+  }
+}
+
+$CliMessages->send_info_msg("\nWell done, you are all set!\n");
